@@ -19,7 +19,6 @@ class Message {
     this.integrations = {
       [integration]: false
     };
-    this.properties = {};
   }
 
   setEventName(name) {
@@ -31,6 +30,9 @@ class Message {
   }
 
   setProperty(name, value) {
+    if (!this.properties) {
+      this.properties = {};
+    }
     this[name] = value;
   }
 
@@ -48,6 +50,10 @@ class Message {
         set(this, mapping[key], setVal);
       }
     });
+  }
+
+  setTimestamp(timestamp) {
+    this.timestamp = timestamp;
   }
 }
 
