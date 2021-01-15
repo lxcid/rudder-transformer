@@ -102,7 +102,9 @@ function setPriceQuanityInPayload(message, rawPayload) {
     quantity = 1;
   } else {
     price = message.properties.price;
-    quantity = message.properties.quantity || 1;
+    if (message.properties.quantity) {
+      quantity = message.properties.quantity;
+    }
   }
   rawPayload.price = price;
   rawPayload.quantity = quantity;
@@ -220,9 +222,8 @@ function responseBuilderSimple(
       break;
     default:
       set(rawPayload, "event_properties", message.properties);
-      if (message.type === EventType.TRACK)
+      if (evType === EventType.TRACK)
         set(rawPayload, "user_properties", message.context.traits);
-
       rawPayload.event_type = evType;
       rawPayload.user_id = message.userId;
       if (
@@ -457,24 +458,23 @@ function isProductArrayInPayload(message) {
   return isProductArray;
 }
 
-function getProductPurchasedEvents(message, destination) {
-  const productPurchasedEvents = [];
+function getProductPurchasedEvents(message, destination, sendEvent) {
   if (isProductArrayInPayload(message)) {
     let counter = 0;
 
     // Create product purchased event for each product in products array.
     message.properties.products.forEach(product => {
       counter += 1;
-      const productPurchasedEvent = createProductPurchasedEvent(
+      const eventClonePurchaseProduct = createProductPurchasedEvent(
         message,
         destination,
         product,
         counter
       );
-      productPurchasedEvents.push(productPurchasedEvent);
+      sendEvent.push(eventClonePurchaseProduct);
     });
   }
-  return productPurchasedEvents;
+  return sendEvent;
 }
 
 function trackRevenueEvent(message, destination) {
@@ -516,15 +516,73 @@ function trackRevenueEvent(message, destination) {
     destination.Config.trackRevenuePerProduct === true ||
     destination.Config.trackProductsOnce === false
   ) {
-    const productPurchasedEvents = getProductPurchasedEvents(
-      message,
-      destination
-    );
-    if (productPurchasedEvents.length > 0) {
-      sendEvents = [...sendEvents, ...productPurchasedEvents];
-    }
+    sendEvents = getProductPurchasedEvents(message, destination, sendEvents);
   }
   return sendEvents;
+}
+
+function updateTraitsObject(property, traitObject, newProperty) {
+  let propertyToUpdate;
+  if (traitObject.hasOwnProperty(property)) {
+    propertyToUpdate = traitObject[property];
+    newProperty[property] = propertyToUpdate;
+    delete traitObject[property];
+  }
+  return traitObject;
+}
+
+function passingTraitConfigs(
+  configPropertyTrait,
+  objectToInclude,
+  traitObject
+) {
+  let updatedTrait;
+  configPropertyTrait.forEach(traitCount => {
+    const property = traitCount.traits;
+    updatedTrait = updateTraitsObject(property, traitObject, objectToInclude);
+  });
+  return updatedTrait;
+}
+
+function traitsHandler(message, destination) {
+  let updatedTrait;
+  const messageBuffer = JSON.parse(JSON.stringify(message));
+  const traitObject = JSON.parse(JSON.stringify(messageBuffer.context.traits));
+
+  if (destination.Config.traitsToIncrement) {
+    traitObject.$add = new Object();
+    updatedTrait = passingTraitConfigs(
+      destination.Config.traitsToIncrement,
+      traitObject.$add,
+      traitObject
+    );
+  }
+  if (destination.Config.traitsToSetOnce) {
+    traitObject.$setOnce = new Object();
+    updatedTrait = passingTraitConfigs(
+      destination.Config.traitsToSetOnce,
+      traitObject.$setOnce,
+      traitObject
+    );
+  }
+  if (destination.Config.traitsToAppend) {
+    traitObject.$append = new Object();
+    updatedTrait = passingTraitConfigs(
+      destination.Config.traitsToAppend,
+      traitObject.$append,
+      traitObject
+    );
+  }
+  if (destination.Config.traitsToPrepend) {
+    traitObject.$prepend = new Object();
+    updatedTrait = passingTraitConfigs(
+      destination.Config.traitsToPrepend,
+      traitObject.$prepend,
+      traitObject
+    );
+  }
+  messageBuffer.context.traits = updatedTrait;
+  return messageBuffer;
 }
 
 function process(event) {
@@ -538,6 +596,19 @@ function process(event) {
       revenueEvents.forEach(revenueEvent => {
         toSendEvents.push(revenueEvent);
       });
+    } else {
+      toSendEvents.push(message);
+    }
+  } else if (messageType === EventType.IDENTIFY) {
+    // check if the call is Identify
+    if (
+      destination.Config.traitsToIncrement ||
+      destination.Config.traitsToSetOnce ||
+      destination.Config.traitsToPrepend ||
+      destination.Config.traitsToAppend
+    ) {
+      const identifyTraits = traitsHandler(message, destination);
+      toSendEvents.push(identifyTraits);
     } else {
       toSendEvents.push(message);
     }
